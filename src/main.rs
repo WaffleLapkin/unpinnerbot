@@ -24,7 +24,7 @@ async fn main() {
     let debounce_task = tokio::spawn({
         let bot = bot.clone();
         let channel_map = Arc::clone(&channel_map);
-        let timeout = Duration::from_secs(5);
+        let timeout = Duration::from_secs(1);
         let mut is_there_work = false;
 
         async move {
