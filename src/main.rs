@@ -1,10 +1,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use teloxide::{ApiError, RequestError, adaptors::{throttle::Limits, Throttle}, payloads::SendMessageSetters};
 use teloxide::prelude::*;
 use teloxide::types::MessageKind;
+use teloxide::{
+    adaptors::{throttle::Limits, Throttle},
+    payloads::SendMessageSetters,
+    ApiError, RequestError,
+};
 use tokio::sync::{mpsc, Mutex};
+
+const START_MSG: &str = "I automatically unpin messages sent from the linked channel. Don't forget to grant me Pin Messages permission to work.";
 
 #[tokio::main]
 async fn main() {
@@ -31,8 +37,8 @@ async fn main() {
             loop {
                 match tokio::time::timeout(timeout, debounce_rx.recv()).await {
                     Ok(Some(())) => {
-                        is_there_work = true;
                         log::debug!("debouncing");
+                        is_there_work = true;
                     }
                     Ok(None) => {
                         log::debug!("stopping");
@@ -44,10 +50,12 @@ async fn main() {
                         let mut channel_map = channel_map.lock().await;
                         for (&group, &msg_id) in channel_map.iter() {
                             if let Err(e) = bot.unpin_chat_message(group).message_id(msg_id).await {
-                                if let RequestError::ApiError { kind, .. } = e {
-                                    if let ApiError::NotEnoughRightsToManagePins = kind {
-                                        bot.send_message(group, "Failed to unpin this message. Please, grant me Pin Messages permission to work properly.").reply_to_message_id(msg_id).await.log_on_error().await;
-                                    }
+                                if let RequestError::ApiError {
+                                    kind: ApiError::NotEnoughRightsToManagePins,
+                                    ..
+                                } = e
+                                {
+                                    bot.send_message(group, "Failed to unpin this message. Please, grant me Pin Messages permission to work properly.").reply_to_message_id(msg_id).await.log_on_error().await;
                                 } else {
                                     log::error!("Error: {}", e);
                                 }
@@ -65,35 +73,38 @@ async fn main() {
 
     Dispatcher::new(bot)
         .messages_handler(
-            move |mut rx: DispatcherHandlerRx<AutoSend<Throttle<Bot>>, Message>| {
+            move |mut rx: DispatcherHandlerRx<AutoSend<Throttle<Bot>>, Message>| async move {
                 let channel_map = Arc::clone(&channel_map);
 
-                async move {
-                    while let Some(m) = rx.recv().await {
-                        let update = &m.update;
+                while let Some(m) = rx.recv().await {
+                    let update = &m.update;
 
-                        if !update.chat.is_supergroup() {
-                            continue;
-                        }
+                    if update.chat.is_private() {
+                        m.answer(START_MSG).await.log_on_error().await;
+                    }
 
-                        match &update.kind {
-                            MessageKind::NewChatMembers(message) => {
-                                if message.new_chat_members.iter().any(|u| u.id == bot_user.user.id) {
-                                    m.answer("I automatically unpin messages sent from the linked channel. Don't forget to grant me Pin Messages permission to work.").await.log_on_error().await;
-                                }
+                    if !update.chat.is_supergroup() {
+                        continue;
+                    }
+
+                    match &update.kind {
+                        MessageKind::NewChatMembers(message) => {
+                            if message
+                                .new_chat_members
+                                .iter()
+                                .any(|u| u.id == bot_user.user.id)
+                            {
+                                m.answer(START_MSG).await.log_on_error().await;
                             }
-                            MessageKind::Common(message) => {
-                                if update.chat.is_supergroup()
-                                    && message.from.as_ref().filter(|u| u.id == 777000).is_some()
-                                {
-                                    log::debug!("{:#?}", message);
-                                    debounce_tx.send(()).await.unwrap();
-                                    let mut channel_map = channel_map.lock().await;
-                                    channel_map.insert(update.chat.id, update.id);
-                                }
-                            }
-                            _ => {}
                         }
+                        MessageKind::Common(message) => {
+                            if message.from.as_ref().filter(|u| u.id == 777000).is_some() {
+                                debounce_tx.send(()).await.unwrap();
+                                let mut channel_map = channel_map.lock().await;
+                                channel_map.insert(update.chat.id, update.id);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             },
