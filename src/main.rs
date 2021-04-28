@@ -1,14 +1,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use teloxide::prelude::*;
-use teloxide::types::MessageKind;
+use teloxide::types::{MessageKind, User};
 use teloxide::{
     adaptors::{throttle::Limits, Throttle},
     payloads::SendMessageSetters,
     ApiError, RequestError,
 };
-use tokio::sync::{mpsc, Mutex};
+use teloxide::{prelude::*, types::Me};
+use tokio::sync::{
+    mpsc::{self, Sender},
+    Mutex,
+};
+
+type Bot = AutoSend<Throttle<teloxide::Bot>>;
 
 const START_MSG: &str = "I automatically unpin messages sent from the linked channel. Don't forget to grant me Pin Messages permission to work.";
 
@@ -22,8 +27,10 @@ async fn main() {
 
     let (debounce_tx, mut debounce_rx) = mpsc::channel(100);
 
-    let bot = Bot::from_env().throttle(Limits::default()).auto_send();
-    let bot_user = bot.get_me().await.unwrap();
+    let bot = teloxide::Bot::from_env()
+        .throttle(Limits::default())
+        .auto_send();
+    let Me { user: bot_user, .. } = bot.get_me().await.unwrap();
 
     let channel_map: Arc<Mutex<HashMap<i64, i32>>> = Default::default();
 
@@ -72,45 +79,49 @@ async fn main() {
     });
 
     Dispatcher::new(bot)
-        .messages_handler(
-            move |mut rx: DispatcherHandlerRx<AutoSend<Throttle<Bot>>, Message>| async move {
-                let channel_map = Arc::clone(&channel_map);
+        .messages_handler(move |mut rx: DispatcherHandlerRx<_, Message>| async move {
+            let channel_map = Arc::clone(&channel_map);
 
-                while let Some(m) = rx.recv().await {
-                    let update = &m.update;
-
-                    if update.chat.is_private() {
-                        m.answer(START_MSG).await.log_on_error().await;
-                    }
-
-                    if !update.chat.is_supergroup() {
-                        continue;
-                    }
-
-                    match &update.kind {
-                        MessageKind::NewChatMembers(message) => {
-                            if message
-                                .new_chat_members
-                                .iter()
-                                .any(|u| u.id == bot_user.user.id)
-                            {
-                                m.answer(START_MSG).await.log_on_error().await;
-                            }
-                        }
-                        MessageKind::Common(message) => {
-                            if message.from.as_ref().filter(|u| u.id == 777000).is_some() {
-                                debounce_tx.send(()).await.unwrap();
-                                let mut channel_map = channel_map.lock().await;
-                                channel_map.insert(update.chat.id, update.id);
-                            }
-                        }
-                        _ => {}
-                    }
+            while let Some(update) = rx.recv().await {
+                let message = &update.update;
+                if message.chat.is_private() {
+                    handle_private(update).await.log_on_error().await;
+                } else if message.chat.is_supergroup() {
+                    handle_supergroup(update, &debounce_tx, &bot_user, &*channel_map).await;
                 }
-            },
-        )
+            }
+        })
         .dispatch()
         .await;
 
     debounce_task.await.unwrap();
+}
+
+async fn handle_private(cx: UpdateWithCx<Bot, Message>) -> Result<(), RequestError> {
+    cx.answer(START_MSG).await?;
+    Ok(())
+}
+
+async fn handle_supergroup(
+    cx: UpdateWithCx<Bot, Message>,
+    debounce_tx: &Sender<()>,
+    bot_user: &User,
+    channel_map: &Mutex<HashMap<i64, i32>>,
+) {
+    let message = &cx.update;
+    match &message.kind {
+        MessageKind::NewChatMembers(message) => {
+            if message.new_chat_members.iter().any(|u| u.id == bot_user.id) {
+                cx.answer(START_MSG).await.log_on_error().await;
+            }
+        }
+        MessageKind::Common(message_common) => {
+            if let Some(User { id: 777000, .. }) = message_common.from {
+                debounce_tx.send(()).await.unwrap();
+                let mut channel_map = channel_map.lock().await;
+                channel_map.insert(message.chat.id, message.id);
+            }
+        }
+        _ => {}
+    }
 }
