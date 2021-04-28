@@ -43,20 +43,13 @@ async fn main() {
 
                         let mut channel_map = channel_map.lock().await;
                         for (&group, &msg_id) in channel_map.iter() {
-                            match bot.unpin_chat_message(group).message_id(msg_id).await {
-                                Ok(..) => {}
-                                Err(e) => match &e {
-                                    RequestError::ApiError { kind , .. } => match kind {
-                                        ApiError::Unknown(s) if s == "Bad Request: not enough rights to manage pinned messages in the chat" => {
-                                            bot.send_message(group, "Failed to unpin this message. Please, grant me Pin Messages permission to work properly.").reply_to_message_id(msg_id).await.log_on_error().await;
-                                        }
-                                        _ => {
-                                            log::error!("Error: {}", e);
-                                        }
+                            if let Err(e) = bot.unpin_chat_message(group).message_id(msg_id).await {
+                                if let RequestError::ApiError { kind, .. } = e {
+                                    if let ApiError::NotEnoughRightsToManagePins = kind {
+                                        bot.send_message(group, "Failed to unpin this message. Please, grant me Pin Messages permission to work properly.").reply_to_message_id(msg_id).await.log_on_error().await;
                                     }
-                                    _ => {
-                                        log::error!("Error: {}", e);
-                                    }
+                                } else {
+                                    log::error!("Error: {}", e);
                                 }
                             }
                         }

@@ -809,9 +809,9 @@ checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
 
 [[package]]
 name = "syn"
-version = "1.0.70"
+version = "1.0.71"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9505f307c872bab8eb46f77ae357c8eba1fdacead58ee5a850116b1d7f82883"
+checksum = "ad184cc9470f9117b2ac6817bfe297307418819ba40552f9b3846f05c33d5373"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -844,7 +844,7 @@ dependencies = [
 [[package]]
 name = "teloxide-core"
 version = "0.2.2"
-source = "git+https://github.com/teloxide/teloxide-core#7c8df5412c141ca2f2057a5fe2c650c0c1e28bcc"
+source = "git+https://github.com/teloxide/teloxide-core#c5ab1ac89af90987059662a82d4060b8f309b043"
 dependencies = [
  "bytes",
  "derive_more",
