@@ -14,7 +14,10 @@ use tokio::sync::mpsc::{self, Sender};
 
 type Bot = AutoSend<Throttle<teloxide::Bot>>;
 
-const START_MSG: &str = "I automatically unpin messages sent from the linked channel. Don't forget to grant me Pin Messages permission to work.";
+const START_MSG: &str = "\
+I automatically unpin messages sent from the linked channel. Don't forget to grant me Pin Messages permission to work.
+
+Source code: https://github.com/handlerug/unpinnerbot";
 
 #[tokio::main]
 async fn main() {
@@ -51,7 +54,7 @@ async fn main() {
 }
 
 async fn handle_private(cx: UpdateWithCx<Bot, Message>) -> Result<(), RequestError> {
-    cx.answer(START_MSG).await?;
+    cx.answer(START_MSG).disable_web_page_preview(true).await?;
     Ok(())
 }
 
@@ -64,7 +67,11 @@ async fn handle_supergroup(
     match &message.kind {
         MessageKind::NewChatMembers(message) => {
             if message.new_chat_members.iter().any(|u| u.id == bot_user.id) {
-                cx.answer(START_MSG).await.log_on_error().await;
+                cx.answer(START_MSG)
+                    .disable_web_page_preview(true)
+                    .await
+                    .log_on_error()
+                    .await;
             }
         }
         MessageKind::Common(message_common) => {
