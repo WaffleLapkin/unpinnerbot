@@ -17,7 +17,7 @@ type Bot = AutoSend<Throttle<teloxide::Bot>>;
 const START_MSG: &str = "\
 I automatically unpin messages sent from the linked channel. Don't forget to grant me Pin Messages permission to work.
 
-Source code: https://github.com/handlerug/unpinnerbot";
+Source code: https://git.sr.ht/~handlerug/unpinnerbot";
 
 #[tokio::main]
 async fn main() {
