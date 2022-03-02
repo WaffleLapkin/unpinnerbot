@@ -139,7 +139,7 @@ async fn read_from_rx(
         }
     }
 
-    // Don't grow queue bigger than the capacity to limit DOS posibility
+    // Don't grow queue bigger than the capacity to limit DOS possibility
     while tasks.len() < tasks.capacity() {
         // FIXME: https://github.com/tokio-rs/tokio/issues/3350
         match rx.recv().now_or_never() {
