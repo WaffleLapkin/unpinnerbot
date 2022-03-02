@@ -3,13 +3,13 @@
 use futures::{Future, FutureExt};
 use std::time::Duration;
 use std::{collections::HashMap, time::Instant};
-use teloxide::types::{MessageKind, User};
+use teloxide::types::{MessageKind, MessageNewChatMembers, User};
 use teloxide::{
     adaptors::{throttle::Limits, Throttle},
     payloads::SendMessageSetters,
     ApiError, RequestError,
 };
-use teloxide::{prelude::*, types::Me};
+use teloxide::{prelude2::*, types::Me};
 use tokio::sync::mpsc::{self, Sender};
 
 type Bot = AutoSend<Throttle<teloxide::Bot>>;
@@ -36,38 +36,52 @@ async fn main() {
 
     let unpin_task = tokio::spawn(worker(&bot, worker_rx));
 
-    Dispatcher::new(bot)
-        .messages_handler(move |mut rx: DispatcherHandlerRx<_, Message>| async move {
-            while let Some(update) = rx.recv().await {
-                let message = &update.update;
+    // A tree with only one branch, how sad
+    let dispatch_tree = dptree::entry().branch(Update::filter_message().endpoint(
+        move |message: Message, bot: Bot| {
+            let (worker_tx, bot_user) = (worker_tx.clone(), bot_user.clone());
+
+            async move {
                 if message.chat.is_private() {
-                    handle_private(update).await.log_on_error().await;
+                    handle_private(message, bot).await.log_on_error().await;
                 } else if message.chat.is_supergroup() {
-                    handle_supergroup(update, &worker_tx, &bot_user).await;
+                    handle_supergroup(message, bot, worker_tx, bot_user).await;
                 }
+
+                Ok::<_, ()>(())
             }
-        })
+        },
+    ));
+
+    Dispatcher::builder(bot, dispatch_tree)
+        // Ignore anything but messages
+        .default_handler(|_| async {})
+        .build()
+        .setup_ctrlc_handler()
         .dispatch()
         .await;
 
     unpin_task.await.unwrap();
 }
 
-async fn handle_private(cx: UpdateWithCx<Bot, Message>) -> Result<(), RequestError> {
-    cx.answer(START_MSG).disable_web_page_preview(true).await?;
+async fn handle_private(message: Message, bot: Bot) -> Result<(), RequestError> {
+    bot.send_message(message.chat.id, START_MSG)
+        .disable_web_page_preview(true)
+        .await?;
+
     Ok(())
 }
 
 async fn handle_supergroup(
-    cx: UpdateWithCx<Bot, Message>,
-    worker_tx: &Sender<(i64, (i32, Instant))>,
-    bot_user: &User,
+    message: Message,
+    bot: Bot,
+    worker_tx: Sender<(i64, (i32, Instant))>,
+    bot_user: User,
 ) {
-    let message = &cx.update;
     match &message.kind {
-        MessageKind::NewChatMembers(message) => {
-            if message.new_chat_members.iter().any(|u| u.id == bot_user.id) {
-                cx.answer(START_MSG)
+        MessageKind::NewChatMembers(MessageNewChatMembers { new_chat_members }) => {
+            if new_chat_members.iter().any(|u| u.id == bot_user.id) {
+                bot.send_message(message.chat.id, START_MSG)
                     .disable_web_page_preview(true)
                     .await
                     .log_on_error()
@@ -86,10 +100,7 @@ async fn handle_supergroup(
     }
 }
 
-fn worker(
-    bot: &AutoSend<Throttle<teloxide::Bot>>,
-    mut rx: mpsc::Receiver<(i64, (i32, Instant))>,
-) -> impl Future<Output = ()> {
+fn worker(bot: &Bot, mut rx: mpsc::Receiver<(i64, (i32, Instant))>) -> impl Future<Output = ()> {
     let bot = bot.clone();
 
     async move {
@@ -147,7 +158,7 @@ async fn read_from_rx(
 async fn unpin(bot: &AutoSend<Throttle<teloxide::Bot>>, group: i64, msg_id: i32) {
     if let Err(e) = bot.unpin_chat_message(group).message_id(msg_id).await {
         match e {
-            RequestError::ApiError { kind: ApiError::NotEnoughRightsToManagePins, ..} => {
+            RequestError::Api(ApiError::NotEnoughRightsToManagePins) => {
                 bot
                     .send_message(group, "Failed to unpin this message. Please, grant me Pin Messages permission to work properly.")
                     .reply_to_message_id(msg_id)
