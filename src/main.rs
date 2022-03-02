@@ -13,6 +13,7 @@ use teloxide::{prelude2::*, types::Me};
 use tokio::sync::mpsc::{self, Sender};
 
 type Bot = AutoSend<Throttle<teloxide::Bot>>;
+type WorkerTx = mpsc::Sender<(i64, (i32, Instant))>;
 
 const START_MSG: &str = "\
 I automatically unpin messages sent from the linked channel. Don't forget to grant me Pin Messages permission to work.
@@ -27,18 +28,17 @@ async fn main() {
     pretty_env_logger::init();
     log::info!("Starting unpinnerbot...");
 
-    let (worker_tx, worker_rx) = mpsc::channel(100);
-
     let bot = teloxide::Bot::from_env()
         .throttle(Limits::default())
         .auto_send();
     let Me { user: bot_user, .. } = bot.get_me().await.unwrap();
 
+    let (worker_tx, worker_rx) = mpsc::channel(100);
     let unpin_task = tokio::spawn(worker(&bot, worker_rx));
 
     // A tree with only one branch, how sad
     let dispatch_tree = dptree::entry().branch(Update::filter_message().endpoint(
-        move |message: Message, bot: Bot| {
+        |message: Message, bot: Bot, bot_user: User, worker_tx: WorkerTx| {
             let (worker_tx, bot_user) = (worker_tx.clone(), bot_user.clone());
 
             async move {
@@ -56,6 +56,7 @@ async fn main() {
     Dispatcher::builder(bot, dispatch_tree)
         // Ignore anything but messages
         .default_handler(|_| async {})
+        .dependencies(dptree::deps![bot_user, worker_tx])
         .build()
         .setup_ctrlc_handler()
         .dispatch()
