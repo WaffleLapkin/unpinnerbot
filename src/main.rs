@@ -1,6 +1,6 @@
 #![feature(hash_drain_filter)]
 
-use futures::{Future, FutureExt};
+use futures::Future;
 use std::time::Duration;
 use std::{collections::HashMap, time::Instant};
 use teloxide::types::{MessageKind, MessageNewChatMembers, User};
@@ -136,22 +136,27 @@ async fn read_from_rx(
             Some((chat_id, value)) => {
                 tasks.insert(chat_id, value);
             }
-            None => *rx_is_closed = true,
+            None => {
+                *rx_is_closed = true;
+                return;
+            }
         }
     }
 
     // Don't grow queue bigger than the capacity to limit DOS possibility
     while tasks.len() < tasks.capacity() {
-        // FIXME: https://github.com/tokio-rs/tokio/issues/3350
-        match rx.recv().now_or_never() {
-            Some(Some((chat_id, new_task))) => {
+        match rx.try_recv() {
+            Ok((chat_id, new_task)) => {
                 // Insert the latest message id into jobs list
                 let task = tasks.entry(chat_id).or_insert(new_task);
                 *task = std::cmp::max_by_key(*task, new_task, |(mid, _)| *mid);
             }
-            Some(None) => *rx_is_closed = true,
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                *rx_is_closed = true;
+                break;
+            }
             // There are no items in queue.
-            None => break,
+            Err(mpsc::error::TryRecvError::Empty) => break,
         }
     }
 }
