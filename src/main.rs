@@ -1,19 +1,22 @@
 #![feature(hash_drain_filter)]
 
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
+
 use futures::Future;
-use std::time::Duration;
-use std::{collections::HashMap, time::Instant};
-use teloxide::types::{MessageKind, MessageNewChatMembers, User};
 use teloxide::{
     adaptors::{throttle::Limits, Throttle},
-    payloads::SendMessageSetters,
+    error_handlers::OnError,
+    prelude::*,
+    types::{Me, MessageKind, MessageNewChatMembers, User},
     ApiError, RequestError,
 };
-use teloxide::{prelude2::*, types::Me};
 use tokio::sync::mpsc::{self, Sender};
 
 type Bot = AutoSend<Throttle<teloxide::Bot>>;
-type WorkerTx = mpsc::Sender<(i64, (i32, Instant))>;
+type WorkerTx = mpsc::Sender<(ChatId, (i32, Instant))>;
 
 const START_MSG: &str = "\
 I automatically unpin messages sent from the linked channel. Don't forget to grant me Pin Messages permission to work.
@@ -76,10 +79,10 @@ async fn handle_private(message: Message, bot: Bot) -> Result<(), RequestError> 
 async fn handle_supergroup(
     message: Message,
     bot: Bot,
-    worker_tx: Sender<(i64, (i32, Instant))>,
+    worker_tx: Sender<(ChatId, (i32, Instant))>,
     bot_user: User,
 ) {
-    match &message.kind {
+    match message.kind {
         MessageKind::NewChatMembers(MessageNewChatMembers { new_chat_members }) => {
             if new_chat_members.iter().any(|u| u.id == bot_user.id) {
                 bot.send_message(message.chat.id, START_MSG)
@@ -90,7 +93,7 @@ async fn handle_supergroup(
             }
         }
         MessageKind::Common(message_common) => {
-            if let Some(User { id: 777000, .. }) = message_common.from {
+            if message_common.from.filter(User::is_telegram).is_some() {
                 worker_tx
                     .send((message.chat.id, (message.id, Instant::now())))
                     .await
@@ -101,7 +104,7 @@ async fn handle_supergroup(
     }
 }
 
-fn worker(bot: &Bot, mut rx: mpsc::Receiver<(i64, (i32, Instant))>) -> impl Future<Output = ()> {
+fn worker(bot: &Bot, mut rx: mpsc::Receiver<(ChatId, (i32, Instant))>) -> impl Future<Output = ()> {
     let bot = bot.clone();
 
     async move {
@@ -109,7 +112,7 @@ fn worker(bot: &Bot, mut rx: mpsc::Receiver<(i64, (i32, Instant))>) -> impl Futu
         const TIMEOUT: Duration = Duration::from_secs(1);
 
         // Chat id => (id of the last message from linked channel, time it was received)
-        let mut tasks: HashMap<i64, (i32, Instant)> = HashMap::with_capacity(64);
+        let mut tasks: HashMap<ChatId, (i32, Instant)> = HashMap::with_capacity(64);
 
         while !rx_closed || !tasks.is_empty() {
             read_from_rx(&mut rx, &mut tasks, &mut rx_closed).await;
@@ -127,8 +130,8 @@ fn worker(bot: &Bot, mut rx: mpsc::Receiver<(i64, (i32, Instant))>) -> impl Futu
 }
 
 async fn read_from_rx(
-    rx: &mut mpsc::Receiver<(i64, (i32, Instant))>,
-    tasks: &mut HashMap<i64, (i32, Instant)>,
+    rx: &mut mpsc::Receiver<(ChatId, (i32, Instant))>,
+    tasks: &mut HashMap<ChatId, (i32, Instant)>,
     rx_is_closed: &mut bool,
 ) {
     if tasks.is_empty() {
@@ -161,7 +164,7 @@ async fn read_from_rx(
     }
 }
 
-async fn unpin(bot: &AutoSend<Throttle<teloxide::Bot>>, group: i64, msg_id: i32) {
+async fn unpin(bot: &AutoSend<Throttle<teloxide::Bot>>, group: ChatId, msg_id: i32) {
     if let Err(e) = bot.unpin_chat_message(group).message_id(msg_id).await {
         match e {
             RequestError::Api(ApiError::NotEnoughRightsToManagePins) => {
